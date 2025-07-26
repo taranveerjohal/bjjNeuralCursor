@@ -85,32 +85,64 @@ const LiveDetection: React.FC = () => {
     }
   };
 
-  // Draw skeleton on canvas
+  // Enhanced skeleton drawing with better visualization
   const drawSkeleton = (ctx: CanvasRenderingContext2D, pose: Pose, videoWidth: number, videoHeight: number) => {
     const keypoints = pose.keypoints;
     
     // Define connections between keypoints (skeleton structure)
     const connections = [
+      // Head connections
       ['nose', 'leftEye'], ['nose', 'rightEye'],
       ['leftEye', 'leftEar'], ['rightEye', 'rightEar'],
+      // Torso connections
       ['leftShoulder', 'rightShoulder'],
-      ['leftShoulder', 'leftElbow'], ['rightShoulder', 'rightElbow'],
-      ['leftElbow', 'leftWrist'], ['rightElbow', 'rightWrist'],
       ['leftShoulder', 'leftHip'], ['rightShoulder', 'rightHip'],
       ['leftHip', 'rightHip'],
-      ['leftHip', 'leftKnee'], ['rightHip', 'rightKnee'],
-      ['leftKnee', 'leftAnkle'], ['rightKnee', 'rightAnkle']
+      // Left arm
+      ['leftShoulder', 'leftElbow'], ['leftElbow', 'leftWrist'],
+      // Right arm
+      ['rightShoulder', 'rightElbow'], ['rightElbow', 'rightWrist'],
+      // Left leg
+      ['leftHip', 'leftKnee'], ['leftKnee', 'leftAnkle'],
+      // Right leg
+      ['rightHip', 'rightKnee'], ['rightKnee', 'rightAnkle']
     ];
 
-    // Draw connections (bones)
-    ctx.strokeStyle = '#00ff00';
-    ctx.lineWidth = 2;
-    
+    // Draw connections (bones) with varying colors and thickness
     connections.forEach(([start, end]) => {
       const startPoint = keypoints.find(kp => kp.name === start);
       const endPoint = keypoints.find(kp => kp.name === end);
       
       if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) {
+        // Color coding for different body parts
+        let color = '#00ff00'; // Default green
+        let lineWidth = 3;
+        
+        if (start.includes('arm') || end.includes('arm') || 
+            start.includes('Wrist') || end.includes('Wrist') ||
+            start.includes('Elbow') || end.includes('Elbow') ||
+            start.includes('Shoulder') || end.includes('Shoulder')) {
+          color = '#ff6b6b'; // Red for arms
+        } else if (start.includes('leg') || end.includes('leg') ||
+                   start.includes('Knee') || end.includes('Knee') ||
+                   start.includes('Ankle') || end.includes('Ankle') ||
+                   start.includes('Hip') || end.includes('Hip')) {
+          color = '#4ecdc4'; // Teal for legs
+        } else if (start.includes('Eye') || end.includes('Eye') ||
+                   start.includes('Ear') || end.includes('Ear') ||
+                   start === 'nose' || end === 'nose') {
+          color = '#ffe66d'; // Yellow for head
+          lineWidth = 2;
+        }
+        
+        // Calculate confidence-based alpha
+        const avgConfidence = (startPoint.score + endPoint.score) / 2;
+        ctx.globalAlpha = Math.max(0.6, avgConfidence);
+        
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        ctx.lineCap = 'round';
+        
         ctx.beginPath();
         ctx.moveTo(startPoint.x, startPoint.y);
         ctx.lineTo(endPoint.x, endPoint.y);
@@ -118,15 +150,51 @@ const LiveDetection: React.FC = () => {
       }
     });
 
-    // Draw keypoints (joints)
+    // Reset alpha
+    ctx.globalAlpha = 1.0;
+
+    // Draw keypoints (joints) with enhanced visualization
     keypoints.forEach(keypoint => {
       if (keypoint.score > 0.3) {
-        ctx.fillStyle = keypoint.score > 0.7 ? '#ff0000' : '#ffaa00';
+        const radius = keypoint.score > 0.7 ? 6 : 4;
+        const innerRadius = radius - 2;
+        
+        // Outer circle (colored based on confidence)
+        ctx.fillStyle = keypoint.score > 0.7 ? '#ff4757' : 
+                       keypoint.score > 0.5 ? '#ffa726' : '#ffeb3b';
         ctx.beginPath();
-        ctx.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
+        ctx.arc(keypoint.x, keypoint.y, radius, 0, 2 * Math.PI);
         ctx.fill();
+        
+        // Inner circle (white center)
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(keypoint.x, keypoint.y, innerRadius, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Add keypoint labels for debugging (optional - can be toggled)
+        if (keypoint.score > 0.6) {
+          ctx.fillStyle = '#000000';
+          ctx.font = '10px Arial';
+          ctx.fillText(keypoint.name, keypoint.x + 8, keypoint.y - 8);
+        }
       }
     });
+    
+    // Draw pose confidence indicator
+    if (pose.score > 0) {
+      const confidenceText = `Pose Confidence: ${Math.round(pose.score * 100)}%`;
+      const gradient = ctx.createLinearGradient(0, 0, 200, 0);
+      gradient.addColorStop(0, '#667eea');
+      gradient.addColorStop(1, '#764ba2');
+      
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(10, 10, 220, 30);
+      
+      ctx.fillStyle = gradient;
+      ctx.font = '14px Arial';
+      ctx.fillText(confidenceText, 15, 30);
+    }
   };
 
   // Pose detection loop

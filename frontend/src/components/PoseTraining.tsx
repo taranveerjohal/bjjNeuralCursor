@@ -35,6 +35,9 @@ const PoseTraining: React.FC = () => {
   const [trainingData, setTrainingData] = useState<TrainingSample[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [currentPose, setCurrentPose] = useState<Pose | null>(null);
+  const [recordingStatus, setRecordingStatus] = useState<'idle' | 'recording' | 'paused'>('idle');
+  const [trainingProgress, setTrainingProgress] = useState<number>(0);
+  const [sampleCount, setSampleCount] = useState<number>(0);
 
   // Initialize models
   useEffect(() => {
@@ -112,16 +115,27 @@ const PoseTraining: React.FC = () => {
       return;
     }
     setIsRecording(true);
-    addLog(`Started recording samples for: ${poseLabel}`);
+    setRecordingStatus('recording');
+    setSampleCount(0);
+    addLog(`🔴 Started recording samples for: ${poseLabel}`);
+    addLog('💡 Tip: Move through different variations of the pose for better training data');
   };
 
   // Stop recording pose samples
   const stopRecording = () => {
     setIsRecording(false);
-    addLog(`Stopped recording. Total samples for ${poseLabel}: ${trainingData.filter(sample => sample.output === poseLabel).length}`);
+    setRecordingStatus('idle');
+    const samplesForThisLabel = trainingData.filter(sample => sample.output === poseLabel).length;
+    addLog(`⏹️ Stopped recording. Total samples for ${poseLabel}: ${samplesForThisLabel}`);
+    
+    if (samplesForThisLabel < 10) {
+      addLog('⚠️ Warning: Consider recording more samples (10+ recommended) for better accuracy');
+    } else if (samplesForThisLabel >= 50) {
+      addLog('✅ Great! You have sufficient samples for good training results');
+    }
   };
 
-  // Draw skeleton on canvas
+  // Enhanced skeleton drawing for training with recording indicator
   const drawSkeleton = (ctx: CanvasRenderingContext2D, pose: Pose) => {
     const keypoints = pose.keypoints;
     
@@ -137,15 +151,23 @@ const PoseTraining: React.FC = () => {
       ['leftKnee', 'leftAnkle'], ['rightKnee', 'rightAnkle']
     ];
 
-    // Draw connections
-    ctx.strokeStyle = '#00ff00';
-    ctx.lineWidth = 2;
+    // Change colors based on recording status
+    const skeletonColor = isRecording ? '#ff4757' : '#2ed573'; // Red when recording, green otherwise
+    const jointColor = isRecording ? '#ff3838' : '#26de81';
+    
+    // Draw connections with enhanced visibility
+    ctx.strokeStyle = skeletonColor;
+    ctx.lineWidth = isRecording ? 3 : 2;
+    ctx.lineCap = 'round';
     
     connections.forEach(([start, end]) => {
       const startPoint = keypoints.find(kp => kp.name === start);
       const endPoint = keypoints.find(kp => kp.name === end);
       
       if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) {
+        const avgConfidence = (startPoint.score + endPoint.score) / 2;
+        ctx.globalAlpha = Math.max(0.6, avgConfidence);
+        
         ctx.beginPath();
         ctx.moveTo(startPoint.x, startPoint.y);
         ctx.lineTo(endPoint.x, endPoint.y);
@@ -153,15 +175,60 @@ const PoseTraining: React.FC = () => {
       }
     });
 
-    // Draw keypoints
+    ctx.globalAlpha = 1.0;
+
+    // Draw keypoints with enhanced visualization
     keypoints.forEach(keypoint => {
       if (keypoint.score > 0.3) {
-        ctx.fillStyle = keypoint.score > 0.7 ? '#ff0000' : '#ffaa00';
+        const radius = keypoint.score > 0.7 ? 6 : 4;
+        
+        // Outer circle
+        ctx.fillStyle = jointColor;
         ctx.beginPath();
-        ctx.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
+        ctx.arc(keypoint.x, keypoint.y, radius, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Inner circle
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(keypoint.x, keypoint.y, radius - 2, 0, 2 * Math.PI);
         ctx.fill();
       }
     });
+    
+    // Draw recording indicator and pose info
+    if (isRecording) {
+      // Pulsing red dot
+      const pulseSize = 15 + Math.sin(Date.now() / 200) * 5;
+      ctx.fillStyle = '#ff4757';
+      ctx.beginPath();
+      ctx.arc(30, 30, pulseSize, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 14px Arial';
+      ctx.fillText('REC', 20, 35);
+      
+      // Sample count
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(10, 50, 200, 25);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(`Samples: ${sampleCount}`, 15, 67);
+    }
+    
+    // Pose confidence and current label
+    if (pose.score > 0) {
+      const confidenceText = `Confidence: ${Math.round(pose.score * 100)}%`;
+      const labelText = poseLabel ? `Training: ${poseLabel}` : 'No label set';
+      
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(10, ctx.canvas.height - 60, 250, 50);
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '12px Arial';
+      ctx.fillText(confidenceText, 15, ctx.canvas.height - 40);
+      ctx.fillText(labelText, 15, ctx.canvas.height - 25);
+    }
   };
 
   // Pose detection and recording loop
@@ -200,7 +267,7 @@ const PoseTraining: React.FC = () => {
           // Draw skeleton
           drawSkeleton(ctx, pose);
 
-          // Record sample if recording
+          // Record sample if recording with enhanced feedback
           if (isRecording && pose.score > 0.5) {
             const keypoints = pose.keypoints as PoseKeypoint[];
             const input = keypoints.flatMap(kp => [kp.x, kp.y]); // Flatten to 34 values
@@ -210,7 +277,18 @@ const PoseTraining: React.FC = () => {
               output: poseLabel
             };
             
-            setTrainingData(prev => [...prev, newSample]);
+            setTrainingData(prev => {
+              const newData = [...prev, newSample];
+              const currentLabelSamples = newData.filter(s => s.output === poseLabel).length;
+              setSampleCount(currentLabelSamples);
+              
+              // Log milestones
+              if (currentLabelSamples % 10 === 0) {
+                addLog(`📊 Recorded ${currentLabelSamples} samples for ${poseLabel}`);
+              }
+              
+              return newData;
+            });
           }
         } else {
           setCurrentPose(null);
@@ -245,33 +323,59 @@ const PoseTraining: React.FC = () => {
     addLog('Starting model training...');
 
     try {
-      // Add training data to neural network
+      // Add training data to neural network with progress tracking
+      addLog(`📝 Adding ${trainingData.length} samples to neural network...`);
+      
       trainingData.forEach((sample, index) => {
         neuralNetwork.addData(sample.input, sample.output);
-        if (index % 10 === 0) {
-          addLog(`Added ${index + 1}/${trainingData.length} samples`);
+        const progress = Math.round(((index + 1) / trainingData.length) * 30); // 30% for data loading
+        setTrainingProgress(progress);
+        
+        if (index % 20 === 0 || index === trainingData.length - 1) {
+          addLog(`📊 Added ${index + 1}/${trainingData.length} samples (${Math.round(((index + 1) / trainingData.length) * 100)}%)`);
         }
       });
 
-      // Train the model
+      // Normalize data
+      addLog('🔄 Normalizing data...');
       neuralNetwork.normalizeData();
+      setTrainingProgress(35);
       
       const trainingOptions = {
         epochs: 50,
-        batchSize: 32
+        batchSize: 32,
+        learningRate: 0.01
       };
 
+      addLog(`🚀 Starting training with ${trainingOptions.epochs} epochs...`);
+      
       neuralNetwork.train(trainingOptions, (epoch: any) => {
         if (epoch && epoch.logs) {
-          addLog(`Epoch ${epoch.epoch}: loss=${epoch.logs.loss.toFixed(4)}, accuracy=${epoch.logs.acc.toFixed(4)}`);
+          const epochProgress = 35 + Math.round((epoch.epoch / trainingOptions.epochs) * 60); // 60% for training
+          setTrainingProgress(epochProgress);
+          
+          if (epoch.epoch % 5 === 0 || epoch.epoch === trainingOptions.epochs - 1) {
+            addLog(`🎯 Epoch ${epoch.epoch + 1}/${trainingOptions.epochs}: loss=${epoch.logs.loss.toFixed(4)}, accuracy=${(epoch.logs.acc * 100).toFixed(1)}%`);
+          }
         }
       }, () => {
-        addLog('Training completed!');
-        setIsTraining(false);
+        setTrainingProgress(95);
+        addLog('✅ Training completed successfully!');
+        
+        // Evaluate training quality
+        const uniqueLabels = Array.from(new Set(trainingData.map(s => s.output)));
+        addLog(`📋 Model trained on ${uniqueLabels.length} different poses: ${uniqueLabels.join(', ')}`);
         
         // Save model
+        addLog('💾 Saving model...');
         neuralNetwork.save('bjj-pose-model', () => {
-          addLog('Model saved successfully');
+          setTrainingProgress(100);
+          addLog('🎉 Model saved successfully! You can now test it in the "Pose Testing" tab.');
+          
+          setTimeout(() => {
+            setIsTraining(false);
+            setTrainingProgress(0);
+          }, 2000);
         });
       });
 
@@ -302,11 +406,48 @@ const PoseTraining: React.FC = () => {
       <h2>Pose Training</h2>
       
       <div className="status-display">
-        <h3>Status</h3>
-        <p>Models: {isModelLoaded ? 'Loaded' : 'Loading...'}</p>
-        <p>Recording: {isRecording ? 'Active' : 'Inactive'}</p>
-        <p>Training: {isTraining ? 'In Progress' : 'Idle'}</p>
-        <p>Total Samples: {trainingData.length}</p>
+        <h3>📊 Training Status</h3>
+        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem'}}>
+          <div>
+            <strong>Models:</strong> <span style={{color: isModelLoaded ? '#28a745' : '#ffc107'}}>
+              {isModelLoaded ? '✅ Loaded' : '⏳ Loading...'}
+            </span>
+          </div>
+          <div>
+            <strong>Recording:</strong> <span style={{color: isRecording ? '#dc3545' : '#6c757d'}}>
+              {isRecording ? '🔴 Active' : '⚫ Inactive'}
+            </span>
+          </div>
+          <div>
+            <strong>Training:</strong> <span style={{color: isTraining ? '#007bff' : '#6c757d'}}>
+              {isTraining ? `🚀 In Progress (${trainingProgress}%)` : '💤 Idle'}
+            </span>
+          </div>
+          <div>
+            <strong>Total Samples:</strong> <span style={{color: trainingData.length > 0 ? '#28a745' : '#6c757d'}}>
+              📈 {trainingData.length}
+            </span>
+          </div>
+        </div>
+        
+        {isTraining && (
+          <div style={{marginTop: '1rem'}}>
+            <div style={{background: '#e9ecef', borderRadius: '10px', height: '20px', overflow: 'hidden'}}>
+              <div 
+                style={{
+                  background: 'linear-gradient(90deg, #667eea, #764ba2)',
+                  height: '100%',
+                  width: `${trainingProgress}%`,
+                  transition: 'width 0.3s ease',
+                  borderRadius: '10px'
+                }}
+              />
+            </div>
+            <p style={{textAlign: 'center', marginTop: '0.5rem', fontSize: '0.9rem'}}>
+              Training Progress: {trainingProgress}%
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="input-group">
@@ -377,18 +518,71 @@ const PoseTraining: React.FC = () => {
 
       {Object.keys(getSampleCounts()).length > 0 && (
         <div className="status-display">
-          <h3>Training Data Summary</h3>
-          {Object.entries(getSampleCounts()).map(([label, count]) => (
-            <p key={label}>{label}: {count} samples</p>
-          ))}
+          <h3>📚 Training Data Summary</h3>
+          <div style={{display: 'grid', gap: '0.5rem'}}>
+            {Object.entries(getSampleCounts()).map(([label, count]) => {
+              const percentage = Math.round((count / trainingData.length) * 100);
+              const isGoodAmount = count >= 10;
+              return (
+                <div key={label} style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '0.5rem',
+                  background: isGoodAmount ? '#d4edda' : '#fff3cd',
+                  borderRadius: '5px',
+                  border: `1px solid ${isGoodAmount ? '#c3e6cb' : '#ffeaa7'}`
+                }}>
+                  <span>
+                    <strong>{label}</strong>
+                    {isGoodAmount ? ' ✅' : ' ⚠️'}
+                  </span>
+                  <span>
+                    {count} samples ({percentage}%)
+                    {!isGoodAmount && ' - Need more'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{marginTop: '1rem', padding: '0.5rem', background: '#f8f9fa', borderRadius: '5px'}}>
+            <strong>💡 Tips:</strong>
+            <ul style={{marginLeft: '1rem', fontSize: '0.9rem'}}>
+              <li>Aim for 10+ samples per pose for good accuracy</li>
+              <li>Record different angles and variations of each pose</li>
+              <li>Ensure good lighting and clear pose visibility</li>
+              <li>Balance your dataset - similar sample counts work best</li>
+            </ul>
+          </div>
         </div>
       )}
 
       <div className="log-section">
-        <h3>Training Log</h3>
-        {logs.map((log, index) => (
-          <div key={index}>{log}</div>
-        ))}
+        <h3>📝 Training Log</h3>
+        <div style={{maxHeight: '300px', overflowY: 'auto'}}>
+          {logs.length === 0 ? (
+            <p style={{color: '#6c757d', fontStyle: 'italic'}}>No activity yet. Start by loading the video and recording some poses!</p>
+          ) : (
+            logs.map((log, index) => (
+              <div key={index} style={{
+                padding: '0.25rem 0',
+                borderBottom: index < logs.length - 1 ? '1px solid #eee' : 'none',
+                fontSize: '0.9rem'
+              }}>
+                {log}
+              </div>
+            ))
+          )}
+        </div>
+        {logs.length > 0 && (
+          <button 
+            className="btn btn-secondary" 
+            onClick={() => setLogs([])} 
+            style={{marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.25rem 0.5rem'}}
+          >
+            Clear Log
+          </button>
+        )}
       </div>
     </div>
   );

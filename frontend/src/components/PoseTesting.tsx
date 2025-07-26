@@ -34,6 +34,8 @@ const PoseTesting: React.FC = () => {
   const [prediction, setPrediction] = useState<Prediction | null>(null);
   const [isClassifying, setIsClassifying] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
+  const [fps, setFps] = useState<number>(0);
+  const [predictionHistory, setPredictionHistory] = useState<Prediction[]>([]);
 
   // Initialize models
   useEffect(() => {
@@ -114,7 +116,7 @@ const PoseTesting: React.FC = () => {
     }
   };
 
-  // Draw skeleton on canvas
+  // Enhanced skeleton drawing for testing with classification feedback
   const drawSkeleton = (ctx: CanvasRenderingContext2D, pose: Pose) => {
     const keypoints = pose.keypoints;
     
@@ -130,15 +132,36 @@ const PoseTesting: React.FC = () => {
       ['leftKnee', 'leftAnkle'], ['rightKnee', 'rightAnkle']
     ];
 
-    // Draw connections
-    ctx.strokeStyle = '#00ff00';
-    ctx.lineWidth = 2;
+    // Dynamic colors based on prediction confidence
+    let skeletonColor = '#2ed573'; // Default green
+    let jointColor = '#26de81';
+    
+    if (prediction && isClassifying) {
+      if (prediction.confidence > 0.8) {
+        skeletonColor = '#00d2d3'; // High confidence - cyan
+        jointColor = '#00a8b3';
+      } else if (prediction.confidence > 0.6) {
+        skeletonColor = '#ffa726'; // Medium confidence - orange
+        jointColor = '#ff9800';
+      } else {
+        skeletonColor = '#ff4757'; // Low confidence - red
+        jointColor = '#ff3838';
+      }
+    }
+
+    // Draw connections with enhanced visualization
+    ctx.strokeStyle = skeletonColor;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
     
     connections.forEach(([start, end]) => {
       const startPoint = keypoints.find(kp => kp.name === start);
       const endPoint = keypoints.find(kp => kp.name === end);
       
       if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) {
+        const avgConfidence = (startPoint.score + endPoint.score) / 2;
+        ctx.globalAlpha = Math.max(0.7, avgConfidence);
+        
         ctx.beginPath();
         ctx.moveTo(startPoint.x, startPoint.y);
         ctx.lineTo(endPoint.x, endPoint.y);
@@ -146,15 +169,69 @@ const PoseTesting: React.FC = () => {
       }
     });
 
-    // Draw keypoints
+    ctx.globalAlpha = 1.0;
+
+    // Draw keypoints with enhanced visualization
     keypoints.forEach(keypoint => {
       if (keypoint.score > 0.3) {
-        ctx.fillStyle = keypoint.score > 0.7 ? '#ff0000' : '#ffaa00';
+        const radius = keypoint.score > 0.7 ? 7 : 5;
+        
+        // Outer circle
+        ctx.fillStyle = jointColor;
         ctx.beginPath();
-        ctx.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
+        ctx.arc(keypoint.x, keypoint.y, radius, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Inner circle
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(keypoint.x, keypoint.y, radius - 2, 0, 2 * Math.PI);
         ctx.fill();
       }
     });
+    
+    // Draw classification indicator
+    if (isClassifying) {
+      // Pulsing classification indicator
+      const pulseSize = 12 + Math.sin(Date.now() / 300) * 3;
+      ctx.fillStyle = prediction ? '#00d2d3' : '#6c757d';
+      ctx.beginPath();
+      ctx.arc(30, 30, pulseSize, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 10px Arial';
+      ctx.fillText('AI', 25, 35);
+    }
+    
+    // Draw pose info overlay
+    const overlayHeight = prediction ? 100 : 60;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillRect(10, ctx.canvas.height - overlayHeight - 10, 280, overlayHeight);
+    
+    // Pose confidence
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '14px Arial';
+    ctx.fillText(`Pose Confidence: ${Math.round(pose.score * 100)}%`, 20, ctx.canvas.height - overlayHeight + 5);
+    
+    // FPS
+    ctx.fillText(`FPS: ${fps}`, 20, ctx.canvas.height - overlayHeight + 25);
+    
+    // Classification result
+    if (prediction && isClassifying) {
+      ctx.font = 'bold 16px Arial';
+      const confidenceColor = prediction.confidence > 0.8 ? '#00d2d3' : 
+                              prediction.confidence > 0.6 ? '#ffa726' : '#ff4757';
+      ctx.fillStyle = confidenceColor;
+      ctx.fillText(`Detected: ${prediction.label}`, 20, ctx.canvas.height - overlayHeight + 50);
+      
+      ctx.font = '12px Arial';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(`Confidence: ${Math.round(prediction.confidence * 100)}%`, 20, ctx.canvas.height - overlayHeight + 70);
+    } else if (isClassifying) {
+      ctx.fillStyle = '#ffa726';
+      ctx.fillText('Analyzing pose...', 20, ctx.canvas.height - overlayHeight + 50);
+    }
   };
 
   // Classify pose
@@ -171,19 +248,34 @@ const PoseTesting: React.FC = () => {
       
       if (result && result.length > 0) {
         const topResult = result[0];
-        setPrediction({
+        const newPrediction = {
           label: topResult.label,
           confidence: topResult.confidence
+        };
+        
+        setPrediction(newPrediction);
+        
+        // Add to prediction history for analysis
+        setPredictionHistory(prev => {
+          const newHistory = [...prev, newPrediction].slice(-10); // Keep last 10 predictions
+          return newHistory;
         });
+        
+        // Log high-confidence predictions
+        if (topResult.confidence > 0.8) {
+          addLog(`🎯 High confidence detection: ${topResult.label} (${Math.round(topResult.confidence * 100)}%)`);
+        }
       }
     } catch (error) {
       console.error('Error classifying pose:', error);
     }
   };
 
-  // Pose detection and classification loop
+  // Pose detection and classification loop with FPS tracking
   useEffect(() => {
     let animationId: number;
+    let lastTime = 0;
+    let frameCount = 0;
 
     const detectAndClassify = async () => {
       if (!poseNet || !videoRef.current || !canvasRef.current) {
@@ -224,6 +316,15 @@ const PoseTesting: React.FC = () => {
         } else {
           setCurrentPose(null);
           setPrediction(null);
+        }
+        
+        // Calculate FPS
+        const currentTime = performance.now();
+        frameCount++;
+        if (currentTime - lastTime >= 1000) {
+          setFps(Math.round((frameCount * 1000) / (currentTime - lastTime)));
+          frameCount = 0;
+          lastTime = currentTime;
         }
 
       } catch (error) {
@@ -266,12 +367,40 @@ const PoseTesting: React.FC = () => {
       <h2>Pose Testing</h2>
       
       <div className="status-display">
-        <h3>Status</h3>
-        <p>Models: {isModelLoaded ? 'Loaded' : 'Not Found'}</p>
-        <p>Detection: {isDetecting ? 'Active' : 'Inactive'}</p>
-        <p>Classification: {isClassifying ? 'Active' : 'Inactive'}</p>
+        <h3>📊 Testing Status</h3>
+        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem'}}>
+          <div>
+            <strong>Models:</strong> <span style={{color: isModelLoaded ? '#28a745' : '#dc3545'}}>
+              {isModelLoaded ? '✅ Loaded' : '❌ Not Found'}
+            </span>
+          </div>
+          <div>
+            <strong>Detection:</strong> <span style={{color: isDetecting ? '#28a745' : '#6c757d'}}>
+              {isDetecting ? '📹 Active' : '⚫ Inactive'}
+            </span>
+          </div>
+          <div>
+            <strong>Classification:</strong> <span style={{color: isClassifying ? '#007bff' : '#6c757d'}}>
+              {isClassifying ? '🤖 Active' : '💤 Inactive'}
+            </span>
+          </div>
+          <div>
+            <strong>FPS:</strong> <span style={{color: fps > 15 ? '#28a745' : fps > 10 ? '#ffc107' : '#dc3545'}}>
+              📹 {fps}
+            </span>
+          </div>
+        </div>
+        
         {currentPose && (
-          <p>Pose Confidence: {Math.round(currentPose.score * 100)}%</p>
+          <div style={{marginTop: '1rem', padding: '0.5rem', background: '#f8f9fa', borderRadius: '5px'}}>
+            <strong>Current Pose:</strong>
+            <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.5rem', marginTop: '0.5rem'}}>
+              <div>Confidence: <span style={{color: currentPose.score > 0.7 ? '#28a745' : currentPose.score > 0.5 ? '#ffc107' : '#dc3545'}}>
+                {Math.round(currentPose.score * 100)}%
+              </span></div>
+              <div>Keypoints: {currentPose.keypoints.filter(kp => kp.score > 0.3).length}/{currentPose.keypoints.length}</div>
+            </div>
+          </div>
         )}
       </div>
 
@@ -318,28 +447,91 @@ const PoseTesting: React.FC = () => {
       </div>
 
       {prediction && (
-        <div className="pose-info">
-          <div className="pose-label">
-            Detected: {prediction.label}
+        <div className="pose-info" style={{
+          background: prediction.confidence > 0.8 ? '#e8f5e8' : 
+                     prediction.confidence > 0.6 ? '#fff3e0' : '#ffebee',
+          border: `2px solid ${prediction.confidence > 0.8 ? '#4caf50' : 
+                               prediction.confidence > 0.6 ? '#ff9800' : '#f44336'}`
+        }}>
+          <div className="pose-label" style={{
+            color: prediction.confidence > 0.8 ? '#2e7d32' : 
+                   prediction.confidence > 0.6 ? '#f57c00' : '#c62828'
+          }}>
+            🎯 Detected: {prediction.label}
           </div>
-          <div className="confidence-score">
+          <div className="confidence-score" style={{
+            background: prediction.confidence > 0.8 ? '#4caf50' : 
+                       prediction.confidence > 0.6 ? '#ff9800' : '#f44336'
+          }}>
             {Math.round(prediction.confidence * 100)}%
+          </div>
+        </div>
+      )}
+      
+      {predictionHistory.length > 0 && isClassifying && (
+        <div className="status-display">
+          <h3>📈 Recent Predictions</h3>
+          <div style={{display: 'grid', gap: '0.5rem', maxHeight: '150px', overflowY: 'auto'}}>
+            {predictionHistory.slice(-5).reverse().map((pred, index) => (
+              <div key={index} style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                padding: '0.25rem 0.5rem',
+                background: pred.confidence > 0.7 ? '#d4edda' : '#fff3cd',
+                borderRadius: '3px',
+                fontSize: '0.9rem'
+              }}>
+                <span>{pred.label}</span>
+                <span>{Math.round(pred.confidence * 100)}%</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
       {!isModelLoaded && (
-        <div className="status-display">
-          <h3>No Trained Model Found</h3>
-          <p>Please go to the "Pose Training" tab to train a model first.</p>
+        <div className="status-display" style={{background: '#ffebee', border: '1px solid #f44336'}}>
+          <h3 style={{color: '#c62828'}}>⚠️ No Trained Model Found</h3>
+          <p>Please go to the <strong>"Pose Training"</strong> tab to train a model first.</p>
+          <div style={{marginTop: '1rem', padding: '1rem', background: '#f8f9fa', borderRadius: '5px'}}>
+            <h4 style={{marginBottom: '0.5rem'}}>📝 Quick Start Guide:</h4>
+            <ol style={{marginLeft: '1rem'}}>
+              <li>Go to the "Pose Training" tab</li>
+              <li>Start your video and enter pose labels (e.g., "Guard", "Mount", "Side Control")</li>
+              <li>Record 10+ samples for each pose you want to detect</li>
+              <li>Train the model by clicking "Train Model"</li>
+              <li>Return here to test your trained model!</li>
+            </ol>
+          </div>
         </div>
       )}
 
       <div className="log-section">
-        <h3>Activity Log</h3>
-        {logs.map((log, index) => (
-          <div key={index}>{log}</div>
-        ))}
+        <h3>📝 Activity Log</h3>
+        <div style={{maxHeight: '200px', overflowY: 'auto'}}>
+          {logs.length === 0 ? (
+            <p style={{color: '#6c757d', fontStyle: 'italic'}}>No activity yet. Start detection and classification to see logs here.</p>
+          ) : (
+            logs.map((log, index) => (
+              <div key={index} style={{
+                padding: '0.25rem 0',
+                borderBottom: index < logs.length - 1 ? '1px solid #eee' : 'none',
+                fontSize: '0.9rem'
+              }}>
+                {log}
+              </div>
+            ))
+          )}
+        </div>
+        {logs.length > 0 && (
+          <button 
+            className="btn btn-secondary" 
+            onClick={() => setLogs([])} 
+            style={{marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.25rem 0.5rem'}}
+          >
+            Clear Log
+          </button>
+        )}
       </div>
     </div>
   );
