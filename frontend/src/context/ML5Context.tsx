@@ -288,21 +288,23 @@ export const ML5Provider: React.FC<{ children: React.ReactNode }> = ({ children 
           return;
         }
         
-        // Use ml5.js classify method (proper 2024 pattern)
-        network.classify(inputs, (error: any, results: any) => {
-          if (error) {
-            console.error('Classification error:', error);
+        // Use ml5.js classify method - results come as first parameter
+        network.classify(inputs, (results: any) => {
+          if (!results) {
+            console.error('🚫 Classification error: No results returned');
             resolve({ label: 'classification_error', confidence: 0 });
             return;
           }
           
-          if (results && Array.isArray(results) && results.length > 0) {
+          if (Array.isArray(results) && results.length > 0) {
             const bestResult = results[0];
+            console.log('✅ Classification result:', bestResult.label, (bestResult.confidence * 100).toFixed(1) + '%');
             resolve({
               label: bestResult.label || 'unknown',
               confidence: bestResult.confidence || 0
             });
           } else {
+            console.log('❌ No valid classification results');
             resolve({ label: 'no_results', confidence: 0 });
           }
         });

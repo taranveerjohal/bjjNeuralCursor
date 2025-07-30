@@ -2,8 +2,8 @@ import React, { useState } from "react";
 import { ML5Provider } from "./context/ML5Context";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import PoseDetection from "./components/PoseDetection";
-import Testing from "./components/TestingNew";
-import Training from "./components/TrainingNew";
+import Testing from "./components/Testing";
+import Training from "./components/Training";
 
 const AppContent: React.FC = () => {
   const [activeTab, setActiveTab] = useState("pose");

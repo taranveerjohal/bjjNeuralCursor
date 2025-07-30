@@ -17,21 +17,13 @@ interface PredictionResult {
   timestamp: number;
 }
 
-interface PredictionHistory {
-  predictions: PredictionResult[];
-  accuracy: number;
-  totalPredictions: number;
-}
-
 const Testing: React.FC<TestingProps> = ({ isActive }) => {
   const { 
     isReady, 
     initializePoseDetection, 
     stopPoseDetection, 
     p5Manager, 
-    createAdvancedNeuralNetwork,
     classifyPose,
-    extractPoseFeatures,
     sharedTrainedModel
   } = useML5();
   
@@ -44,100 +36,82 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
   const neuralNetworkRef = useRef<any>(null);
   const posesRef = useRef<any[]>([]);
   const connectionsRef = useRef<any[]>([]);
-  const predictionIntervalRef = useRef<NodeJS.Timeout>();
+  const lastPredictionTimeRef = useRef(0);
+  const currentPredictionRef = useRef<PredictionResult | null>(null);
   
   const [isLoading, setIsLoading] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState('Initializing...');
   const [modelLoaded, setModelLoaded] = useState(false);
-  const [modelStatus, setModelStatus] = useState('Loading...');
+  const [modelStatus, setModelStatus] = useState('Checking for trained model...');
   const [currentPrediction, setCurrentPrediction] = useState<PredictionResult | null>(null);
-  const [predictionHistory, setPredictionHistory] = useState<PredictionHistory>({
-    predictions: [],
-    accuracy: 0,
-    totalPredictions: 0
-  });
-  const [showPredictionDetails, setShowPredictionDetails] = useState(true);
-  const [predictionSpeed, setPredictionSpeed] = useState(500); // ms between predictions
-  const [confidenceThreshold, setConfidenceThreshold] = useState(0.4); // Lowered to see more predictions
-  const [showVisualization, setShowVisualization] = useState(true);
+  const [predictionHistory, setPredictionHistory] = useState<PredictionResult[]>([]);
+  const [predictionSpeed, setPredictionSpeed] = useState(500);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0.5);
+  const [isClassifying, setIsClassifying] = useState(true);
 
-  // Initialize neural network and simple prediction loop
+  // Initialize model from shared training
   useEffect(() => {
     if (!isReady) return;
     
-    // Check if we have a shared trained model from Training component
     if (sharedTrainedModel) {
       neuralNetworkRef.current = sharedTrainedModel;
       setModelLoaded(true);
       setModelStatus('✅ Model loaded from training session!');
-      console.log('Using shared trained model from Training component');
+      console.log('📋 Using shared trained model');
       return;
     }
     
-    // Otherwise check localStorage for model availability flag
+    // Check localStorage for model flag
     const modelTrained = localStorage.getItem('bjj-pose-model-trained');
     if (modelTrained === 'true') {
       setModelLoaded(false);
-      setModelStatus('❌ Model was trained but not accessible. Please retrain.');
-      console.log('Model was trained but not accessible in Testing component');
+      setModelStatus('❌ Model was trained but not accessible. Please retrain in the same session.');
     } else {
       setModelLoaded(false);
       setModelStatus('❌ No trained model found. Please train a model first.');
-      console.log('No trained model found');
     }
-    
   }, [isReady, sharedTrainedModel]);
 
-  // Continuous prediction in draw loop - more responsive than setInterval
-  const lastPredictionTimeRef = useRef(0);
-  const predictionCooldownRef = useRef(predictionSpeed);
-
-  useEffect(() => {
-    predictionCooldownRef.current = predictionSpeed;
-  }, [predictionSpeed]);
-
-  // Continuous prediction function to be called from draw loop
-  const performContinuousPrediction = async () => {
-    const now = Date.now();
-    if (now - lastPredictionTimeRef.current < predictionCooldownRef.current) return;
+  // Continuous classification function called from draw loop
+  const performClassification = async () => {
+    if (!isClassifying || !modelLoaded || !neuralNetworkRef.current) return;
+    if (!posesRef.current || posesRef.current.length === 0) return;
     
-    if (!modelLoaded || !neuralNetworkRef.current) return;
+    const now = Date.now();
+    if (now - lastPredictionTimeRef.current < predictionSpeed) return;
     
     try {
-      // Only classify if we have poses
-      if (posesRef.current && posesRef.current.length > 0) {
-        lastPredictionTimeRef.current = now;
+      lastPredictionTimeRef.current = now;
+      
+      const result = await classifyPose(posesRef.current, neuralNetworkRef.current);
+      
+      
+      // Only process valid results above confidence threshold
+      if (result && 
+          result.label && 
+          !['no_model', 'no_pose', 'invalid_features', 'classification_error', 'no_results', 'exception'].includes(result.label) &&
+          result.confidence >= confidenceThreshold) {
         
-        const result = await classifyPose(posesRef.current, neuralNetworkRef.current);
+        const newPrediction: PredictionResult = {
+          label: result.label,
+          confidence: result.confidence,
+          timestamp: Date.now()
+        };
         
-        // Only update if confidence meets threshold
-        if (result && 
-            result.label && 
-            !['no_model', 'no_pose', 'invalid_features', 'classification_error', 'no_results', 'exception'].includes(result.label) &&
-            result.confidence >= confidenceThreshold) {
-          
-          const newPrediction: PredictionResult = {
-            label: result.label,
-            confidence: result.confidence,
-            timestamp: Date.now()
-          };
-          
-          setCurrentPrediction(newPrediction);
-          
-          setPredictionHistory(prev => ({
-            predictions: [newPrediction, ...prev.predictions].slice(0, 50),
-            totalPredictions: prev.totalPredictions + 1,
-            accuracy: prev.accuracy
-          }));
-        }
-      } else {
-        // No poses - clear prediction after delay
-        if (currentPrediction && now - currentPrediction.timestamp > 2000) {
+        setCurrentPrediction(newPrediction);
+        currentPredictionRef.current = newPrediction; // Update ref for p5 access
+        setPredictionHistory(prev => [newPrediction, ...prev.slice(0, 19)]); // Keep last 20
+        
+        console.log(`🎯 ${result.label.toUpperCase()}: ${(result.confidence * 100).toFixed(1)}%`);
+      } else if (result && ['no_pose'].includes(result.label)) {
+        // Clear prediction immediately when no pose is detected
+        if (currentPredictionRef.current) {
           setCurrentPrediction(null);
+          currentPredictionRef.current = null;
         }
       }
     } catch (error) {
-      console.error('💥 Prediction error:', error);
+      console.error('🚫 Classification error:', error);
     }
   };
 
@@ -146,14 +120,15 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
 
     const sketch = (p: p5) => {
       const gotPoses = (results: any) => {
-        // Update poses with fresh results each time
         posesRef.current = results || [];
         
-        // Simple debug log to verify poses are updating
-        if (results && results.length > 0) {
-          console.log('✅ Poses detected:', results.length);
-        } else {
-          console.log('❌ No poses detected');
+        // Clear prediction if no poses detected for a while
+        if (!results || results.length === 0) {
+          const now = Date.now();
+          if (currentPredictionRef.current && now - currentPredictionRef.current.timestamp > 3000) {
+            setCurrentPrediction(null);
+            currentPredictionRef.current = null;
+          }
         }
       };
 
@@ -164,94 +139,123 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
         return [255, 0, 0]; // Very low confidence - Red
       };
 
-      const drawPredictionVisualization = () => {
-        // Only show prediction if we have both a prediction AND poses are detected
-        if (!currentPrediction || !showVisualization || !posesRef.current || posesRef.current.length === 0) return;
-
-        const [r, g, b] = getPredictionColor(currentPrediction.confidence);
-        
-        // Prediction overlay background with rounded corners
-        p.fill(0, 0, 0, 200);
-        p.noStroke();
-        p.rect(10, 10, 320, 140, 15);
-        
-        // Header
-        p.fill(255);
-        p.textSize(16);
-        p.textAlign(p.LEFT, p.TOP);
-        p.text('🔮 AI Prediction:', 25, 30);
-        
-        // Pose name with confidence color - larger and more prominent
-        p.fill(r, g, b);
-        p.textSize(32);
-        p.textStyle(p.BOLD);
-        p.text(currentPrediction.label.toUpperCase(), 25, 60);
-        
-        // Confidence score
-        p.fill(255);
-        p.textSize(16);
-        p.textStyle(p.NORMAL);
-        p.text(`Confidence: ${(currentPrediction.confidence * 100).toFixed(1)}%`, 25, 100);
-        
-        // Enhanced confidence bar
-        const barWidth = 280;
-        const barHeight = 12;
-        // Background bar
-        p.fill(255, 255, 255, 80);
-        p.rect(25, 120, barWidth, barHeight, 6);
-        // Confidence bar with gradient effect
-        p.fill(r, g, b, 220);
-        p.rect(25, 120, barWidth * currentPrediction.confidence, barHeight, 6);
-        
-        // Time since prediction
-        const timeSince = (Date.now() - currentPrediction.timestamp) / 1000;
-        p.fill(255, 255, 255, 180);
-        p.textSize(12);
-        p.textAlign(p.RIGHT, p.TOP);
-        p.text(`${timeSince.toFixed(1)}s ago`, 315, 100);
+      const drawTrainedPosesInfo = () => {
+        // Show all trained poses at the bottom
+        if (neuralNetworkRef.current && predictionHistory.length > 0) {
+          const uniquePoses = [...new Set(predictionHistory.slice(0, 10).map(p => p.label))];
+          if (uniquePoses.length > 1) {
+            p.fill(0, 0, 0, 120);
+            p.noStroke();
+            p.rect(10, p.height - 45, p.width - 20, 35, 8);
+            
+            p.fill(255, 255, 255, 200);
+            p.textSize(11);
+            p.textAlign(p.LEFT, p.TOP);
+            p.text('Known Poses:', 20, p.height - 38);
+            
+            p.textSize(13);
+            p.textStyle(p.BOLD);
+            p.text(uniquePoses.join(' • '), 20, p.height - 22);
+          }
+        }
       };
 
-      const drawPoseOutline = () => {
-        // Only draw if we have a current prediction AND poses are detected
-        if (!currentPrediction || !showVisualization || !posesRef.current || posesRef.current.length === 0) return;
+      const drawTopPredictionDisplay = () => {
+        // Fallback: Also show prediction at top of canvas for visibility
+        const prediction = currentPredictionRef.current;
+        if (!prediction) return;
         
-        posesRef.current.forEach((pose) => {
+        const [r, g, b] = getPredictionColor(prediction.confidence);
+        
+        // Top center display
+        p.fill(0, 0, 0, 220);
+        p.stroke(r, g, b, 255);
+        p.strokeWeight(4);
+        p.rect(p.width/2 - 150, 15, 300, 60, 12);
+        
+        // Prediction text
+        p.fill(r, g, b);
+        p.noStroke();
+        p.textSize(28);
+        p.textStyle(p.BOLD);
+        p.textAlign(p.CENTER, p.CENTER);
+        p.text(prediction.label.toUpperCase(), p.width/2, 35);
+        
+        // Confidence
+        p.fill(255);
+        p.textSize(14);
+        p.text(`${(prediction.confidence * 100).toFixed(1)}%`, p.width/2, 55);
+      };
+
+      const drawPoseHighlight = () => {
+        const prediction = currentPredictionRef.current;
+        if (!prediction || !posesRef.current || posesRef.current.length === 0) return;
+        
+        const [r, g, b] = getPredictionColor(prediction.confidence);
+        
+        posesRef.current.forEach((pose, poseIndex) => {
           if (!pose?.keypoints) return;
           
-          const [r, g, b] = getPredictionColor(currentPrediction.confidence);
-          
-          // Draw enhanced pose outline based on prediction confidence
           const validKeypoints = pose.keypoints.filter((kp: any) => kp.confidence > CONFIDENCE_THRESHOLD);
           
-          if (validKeypoints.length > 3) {
-            // Use normal coordinates (no flipping for now)
+          if (validKeypoints.length > 5) {
             const xs = validKeypoints.map((kp: any) => kp.x);
             const ys = validKeypoints.map((kp: any) => kp.y);
-            const minX = Math.min(...xs) - 30;
-            const maxX = Math.max(...xs) + 30;
-            const minY = Math.min(...ys) - 30;
-            const maxY = Math.max(...ys) + 30;
+            const minX = Math.min(...xs) - 40;
+            const maxX = Math.max(...xs) + 40;
+            const minY = Math.min(...ys) - 40;
+            const maxY = Math.max(...ys) + 40;
             
-            // Glowing outline effect
+            // Glowing outline effect around the person
             for (let i = 0; i < 3; i++) {
-              p.stroke(r, g, b, 50 - i * 15);
-              p.strokeWeight(8 - i * 2);
+              p.stroke(r, g, b, 60 - i * 20);
+              p.strokeWeight(10 - i * 3);
               p.noFill();
-              p.rect(minX - i, minY - i, (maxX - minX) + i * 2, (maxY - minY) + i * 2, 15);
+              p.rect(minX - i * 2, minY - i * 2, (maxX - minX) + i * 4, (maxY - minY) + i * 4, 20);
             }
             
-            // Prediction label near pose
+            // Main prediction label above the person - make it more visible
             const centerX = (minX + maxX) / 2;
-            const labelY = minY - 40;
+            const labelY = Math.max(minY - 80, 50); // Ensure it's not too close to top
             
-            p.fill(0, 0, 0, 200);
-            p.noStroke();
-            p.rect(centerX - 60, labelY - 10, 120, 25, 8);
+            // Enhanced background with border for better visibility
+            p.fill(0, 0, 0, 240);
+            p.stroke(r, g, b, 200);
+            p.strokeWeight(3);
+            p.rect(centerX - 140, labelY - 30, 280, 60, 15);
             
+            // Pose name - very large and prominent
             p.fill(r, g, b);
-            p.textSize(14);
+            p.noStroke();
+            p.textSize(32);
+            p.textStyle(p.BOLD);
             p.textAlign(p.CENTER, p.CENTER);
-            p.text(currentPrediction.label.toUpperCase(), centerX, labelY + 2);
+            p.text(prediction.label.toUpperCase(), centerX, labelY - 8);
+            
+            // Confidence percentage below pose name with white text
+            p.fill(255, 255, 255);
+            p.textSize(16);
+            p.textStyle(p.BOLD);
+            p.text(`${(prediction.confidence * 100).toFixed(1)}% CONFIDENCE`, centerX, labelY + 18);
+            
+            // Add a pulsing effect for high confidence
+            if (prediction.confidence > 0.8) {
+              const pulse = (Math.sin(p.frameCount * 0.1) + 1) / 2;
+              p.stroke(r, g, b, 100 + pulse * 100);
+              p.strokeWeight(2);
+              p.noFill();
+              p.rect(centerX - 145, labelY - 35, 290, 70, 15);
+            }
+            
+            // Optional: Show person number if multiple people
+            if (posesRef.current.length > 1) {
+              p.fill(r, g, b, 150);
+              p.rect(minX + 10, minY + 10, 30, 25, 5);
+              p.fill(255);
+              p.textSize(12);
+              p.textAlign(p.CENTER, p.CENTER);
+              p.text(`P${poseIndex + 1}`, minX + 25, minY + 22);
+            }
           }
         });
       };
@@ -352,7 +356,6 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
       };
 
       p.draw = () => {
-        // Early return if video ref is not available
         if (!videoRef.current?.elt) {
           p.background(0);
           p.fill(255);
@@ -364,109 +367,82 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
         
         p.background(0);
         
-        // Draw video feed - check if video is ready and loaded
+        // Draw video
         const video = videoRef.current.elt;
         if (video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-          // Draw video normally first (no mirror effect for now to debug)
           p.image(videoRef.current, 0, 0, p.width, p.height);
-        } else if (video && video.readyState >= 1) {
-          // Video metadata is loaded but not enough data to display
-          p.fill(255);
-          p.textAlign(p.CENTER, p.CENTER);
-          p.textSize(16);
-          p.text('Preparing video stream...', p.width/2, p.height/2);
-          return;
         } else {
-          // Show loading state if video isn't ready
           p.fill(255);
           p.textAlign(p.CENTER, p.CENTER);
           p.textSize(16);
           p.text('Loading video...', p.width/2, p.height/2);
-          return; // Don't draw anything else if video isn't ready
+          return;
         }
 
-        // Perform continuous prediction in draw loop for real-time response
-        performContinuousPrediction();
+        // Perform continuous classification
+        performClassification();
 
-        // Draw poses with standard visualization
+        // Draw poses with basic visualization
         posesRef.current.forEach((pose) => {
           if (!pose?.keypoints) return;
 
-          // Draw skeleton - use normal coordinates (no flipping for now)
-          if (connectionsRef.current && showVisualization) {
+          // Draw skeleton
+          if (connectionsRef.current) {
             connectionsRef.current.forEach(([pointAIndex, pointBIndex]) => {
               const pointA = pose.keypoints[pointAIndex];
               const pointB = pose.keypoints[pointBIndex];
               if (pointA.confidence > CONFIDENCE_THRESHOLD && pointB.confidence > CONFIDENCE_THRESHOLD) {
-                p.stroke(255, 255, 255, 150);
+                p.stroke(255, 255, 255, 120);
                 p.strokeWeight(2);
                 p.line(pointA.x, pointA.y, pointB.x, pointB.y);
               }
             });
           }
 
-          // Draw keypoints - use normal coordinates (no flipping for now)
-          if (showVisualization) {
-            pose.keypoints.forEach((keypoint: any) => {
-              if (keypoint.confidence > CONFIDENCE_THRESHOLD) {
-                p.fill(255, 255, 255, 200);
-                p.noStroke();
-                p.circle(keypoint.x, keypoint.y, 6);
-              }
-            });
-          }
+          // Draw keypoints
+          pose.keypoints.forEach((keypoint: any) => {
+            if (keypoint.confidence > CONFIDENCE_THRESHOLD) {
+              p.fill(255, 255, 255, 180);
+              p.noStroke();
+              p.circle(keypoint.x, keypoint.y, 6);
+            }
+          });
         });
 
-        // Draw prediction-based pose outline
-        drawPoseOutline();
+        // Draw prediction highlight and labels over each person
+        drawPoseHighlight();
         
-        // Draw prediction visualization
-        drawPredictionVisualization();
+        // Also draw prediction at top for visibility - this ensures predictions are always visible
+        drawTopPredictionDisplay();
         
-        // Show status based on current state
-        if (modelLoaded) {
-          if (!posesRef.current || posesRef.current.length === 0) {
-            // No poses detected
-            p.fill(0, 0, 0, 150);
-            p.noStroke();
-            p.rect(10, 10, 280, 80, 10);
-            
-            p.fill(255, 165, 0);
-            p.textSize(14);
-            p.textAlign(p.LEFT, p.TOP);
-            p.text('👤 No person detected', 20, 25);
-            
-            p.fill(255, 255, 255, 180);
-            p.textSize(12);
-            p.text('Step into frame to start AI detection', 20, 45);
-            p.text('Minimum confidence: ' + (confidenceThreshold * 100).toFixed(0) + '%', 20, 65);
-          } else if (!currentPrediction) {
-            // Poses detected but no valid prediction
-            p.fill(0, 0, 0, 150);
-            p.noStroke();
-            p.rect(10, 10, 280, 80, 10);
-            
-            p.fill(255, 255, 0);
-            p.textSize(14);
-            p.textAlign(p.LEFT, p.TOP);
-            p.text('🤖 AI Analyzing...', 20, 25);
-            
-            p.fill(255, 255, 255, 180);
-            p.textSize(12);
-            p.text('Perform a trained pose or adjust confidence', 20, 45);
-            p.text('Poses detected: ' + posesRef.current.length, 20, 65);
-          }
+        // Debug info in corner
+        if (currentPredictionRef.current) {
+          p.fill(0, 255, 0, 150);
+          p.noStroke();
+          p.rect(p.width - 20, 10, 15, 15, 3);
         }
-
-        // Model status indicator
+        
+        // Draw trained poses info at bottom
+        drawTrainedPosesInfo();
+        
+        // Status indicators
         if (!modelLoaded) {
           p.fill(255, 0, 0, 150);
           p.noStroke();
-          p.rect(p.width - 250, p.height - 40, 240, 30, 5);
+          p.rect(p.width - 280, p.height - 40, 270, 30, 5);
           p.fill(255);
           p.textSize(12);
           p.textAlign(p.CENTER, p.CENTER);
-          p.text('⚠️ No model loaded - Train a model first', p.width - 130, p.height - 25);
+          p.text('⚠️ No model loaded - Train a model first', p.width - 145, p.height - 25);
+        } else if (!posesRef.current || posesRef.current.length === 0) {
+          p.fill(255, 165, 0, 150);
+          p.noStroke();
+          p.rect(10, p.height - 60, 300, 50, 8);
+          p.fill(255);
+          p.textSize(12);
+          p.textAlign(p.LEFT, p.CENTER);
+          p.text('👤 Position yourself in frame', 20, p.height - 45);
+          p.text('🎯 AI will classify your pose automatically', 20, p.height - 25);
         }
       };
     };
@@ -507,69 +483,21 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
       }
       // Cleanup moved to useEffect cleanup function
     };
-  }, [isActive, isReady, modelLoaded, showVisualization, currentPrediction]);
+  }, [isActive, isReady, modelLoaded, isClassifying]);
 
   const clearPredictionHistory = () => {
-    setPredictionHistory({
-      predictions: [],
-      accuracy: 0,
-      totalPredictions: 0
-    });
+    setPredictionHistory([]);
     setCurrentPrediction(null);
-    console.log('🗑️ Prediction history cleared');
   };
 
-  const clearCurrentPrediction = () => {
-    setCurrentPrediction(null);
-    console.log('🗑️ Current prediction cleared manually');
-  };
-
-  const restartPredictionLoop = () => {
-    // Clear existing interval
-    if (predictionIntervalRef.current) {
-      clearInterval(predictionIntervalRef.current);
-      predictionIntervalRef.current = undefined;
-    }
-    
-    // Clear current prediction
-    setCurrentPrediction(null);
-    
-    // Force re-run of the prediction effect
-    console.log('🔄 Restarting prediction loop...');
-    
-    // This will trigger the useEffect to restart
-    setPredictionSpeed(prev => prev);
-  };
-
-  const clearStoredModel = () => {
-    localStorage.removeItem('bjj-pose-model-trained');
-    localStorage.removeItem('bjj-pose-model-timestamp');
-    neuralNetworkRef.current = null;
-    setModelLoaded(false);
-    setModelStatus('❌ Model cleared. Please train a new model.');
-    console.log('Model references cleared');
-  };
-
-  const refreshModel = async () => {
-    setModelStatus('🔄 Checking for trained model...');
-    
-    // Check if we have a shared trained model
+  const refreshModel = () => {
     if (sharedTrainedModel) {
       neuralNetworkRef.current = sharedTrainedModel;
       setModelLoaded(true);
       setModelStatus('✅ Model refreshed from training session!');
-      console.log('Model refreshed from shared training session');
-      return;
-    }
-    
-    // Otherwise check localStorage flag
-    const modelTrained = localStorage.getItem('bjj-pose-model-trained');
-    if (modelTrained === 'true') {
-      setModelLoaded(false);
-      setModelStatus('❌ Model was trained but not accessible. Please retrain or stay on the same browser session.');
     } else {
       setModelLoaded(false);
-      setModelStatus('❌ No trained model found. Please train a model first.');
+      setModelStatus('❌ No trained model available. Please train a model first.');
     }
   };
 
@@ -592,7 +520,7 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
       {/* Control Panel */}
       <div className={`${getCardStyles()} p-6 space-y-6`}>
         <div className="flex items-center justify-between">
-          <h3 className={`${colors.primaryText} font-semibold text-lg`}>🧠 AI Model Testing</h3>
+          <h3 className={`${colors.primaryText} font-semibold text-xl`}>🤖 ML5.js AI Testing</h3>
           <div className={`px-4 py-2 rounded-full text-sm font-medium border ${
             modelLoaded 
               ? 'bg-green-500/20 border-green-400 text-green-300' 
@@ -602,10 +530,10 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
           </div>
         </div>
 
-        {/* Testing Controls */}
+        {/* Settings */}
         <div className="grid md:grid-cols-2 gap-6">
           <div className="space-y-4">
-            <h4 className={`${colors.secondaryText} font-medium`}>Prediction Settings</h4>
+            <h4 className={`${colors.secondaryText} font-medium`}>Classification Settings</h4>
             
             <div>
               <label className={`block ${colors.secondaryText} text-sm mb-2`}>
@@ -649,28 +577,19 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
           </div>
 
           <div className="space-y-4">
-            <h4 className={`${colors.secondaryText} font-medium`}>Visualization Options</h4>
+            <h4 className={`${colors.secondaryText} font-medium`}>Controls</h4>
             
             <label className="flex items-center space-x-3 cursor-pointer">
               <input
                 type="checkbox"
-                checked={showVisualization}
-                onChange={(e) => setShowVisualization(e.target.checked)}
+                checked={isClassifying}
+                onChange={(e) => setIsClassifying(e.target.checked)}
                 className="w-4 h-4 text-purple-500 bg-transparent border-2 border-white/30 rounded focus:ring-purple-500"
+                disabled={!modelLoaded}
               />
-              <span className={colors.secondaryText}>Show pose visualization</span>
+              <span className={colors.secondaryText}>Enable real-time classification</span>
             </label>
             
-            <label className="flex items-center space-x-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showPredictionDetails}
-                onChange={(e) => setShowPredictionDetails(e.target.checked)}
-                className="w-4 h-4 text-purple-500 bg-transparent border-2 border-white/30 rounded focus:ring-purple-500"
-              />
-              <span className={colors.secondaryText}>Show prediction details</span>
-            </label>
-
             <button
               onClick={refreshModel}
               className={`w-full px-4 py-2 ${getButtonStyles('secondary')} mb-2`}
@@ -679,35 +598,11 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
             </button>
             
             <button
-              onClick={clearStoredModel}
-              className={`w-full px-4 py-2 ${getButtonStyles('danger')} mb-2`}
-              disabled={!modelLoaded}
-            >
-              🗑️ Clear Model
-            </button>
-            
-            <button
               onClick={clearPredictionHistory}
-              className={`w-full px-4 py-2 ${getButtonStyles('danger')} mb-2`}
-              disabled={predictionHistory.predictions.length === 0}
+              className={`w-full px-4 py-2 ${getButtonStyles('danger')}`}
+              disabled={predictionHistory.length === 0}
             >
               🗑️ Clear History
-            </button>
-            
-            <button
-              onClick={clearCurrentPrediction}
-              className={`w-full px-4 py-2 ${getButtonStyles('secondary')} mb-2`}
-              disabled={!currentPrediction}
-            >
-              🧹 Clear Current Prediction
-            </button>
-            
-            <button
-              onClick={restartPredictionLoop}
-              className={`w-full px-4 py-2 ${getButtonStyles('primary')}`}
-              disabled={!modelLoaded}
-            >
-              🔄 Restart Detection
             </button>
           </div>
         </div>
@@ -732,49 +627,17 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
         </div>
       </div>
 
-      {/* Current Prediction Display */}
-      {!isLoading && currentPrediction && showPredictionDetails && (
-        <div className={`${getCardStyles()} p-6`}>
-          <h3 className={`${colors.primaryText} font-semibold text-lg mb-4`}>🔮 Current AI Prediction</h3>
-          <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-gradient-to-r from-purple-500 to-pink-500 rounded-xl flex items-center justify-center text-2xl">
-                🥋
-              </div>
-              <div>
-                <div className={`text-2xl font-bold ${colors.primaryText}`}>{currentPrediction.label.toUpperCase()}</div>
-                <div className={`${colors.secondaryText} text-sm`}>
-                  Detected {((Date.now() - currentPrediction.timestamp) / 1000).toFixed(1)}s ago
-                </div>
-              </div>
-            </div>
-            <div className="text-right">
-              <div className={`text-2xl font-bold ${getConfidenceColor(currentPrediction.confidence)}`}>
-                {(currentPrediction.confidence * 100).toFixed(1)}%
-              </div>
-              <div className={`px-3 py-1 rounded-full text-xs border ${getConfidenceBadge(currentPrediction.confidence)}`}>
-                {currentPrediction.confidence > 0.8 ? 'High' : 
-                 currentPrediction.confidence > 0.6 ? 'Medium' : 
-                 currentPrediction.confidence > 0.4 ? 'Low' : 'Very Low'} Confidence
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Prediction History */}
-      {predictionHistory.predictions.length > 0 && showPredictionDetails && (
+      {predictionHistory.length > 0 && (
         <div className={`${getCardStyles()} p-6`}>
           <div className="flex items-center justify-between mb-4">
             <h3 className={`${colors.primaryText} font-semibold text-lg`}>
-              📊 Prediction History ({predictionHistory.predictions.length})
+              📊 Recent Predictions ({predictionHistory.length})
             </h3>
-            <div className={`${colors.secondaryText} text-sm`}>
-              Total: {predictionHistory.totalPredictions} predictions
-            </div>
           </div>
           <div className="max-h-48 overflow-y-auto space-y-2">
-            {predictionHistory.predictions.slice(0, 10).map((prediction, index) => (
+            {predictionHistory.slice(0, 10).map((prediction, index) => (
               <div 
                 key={`${prediction.timestamp}-${index}`} 
                 className="flex items-center justify-between p-3 bg-white/5 rounded-lg border border-white/5"
@@ -799,7 +662,7 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
         </div>
       )}
 
-      {/* Model Status & Instructions */}
+      {/* Status & Instructions */}
       <div className={`${getCardStyles()} p-6`}>
         <h3 className={`${colors.primaryText} font-semibold text-lg mb-4`}>📋 Model Status & Instructions</h3>
         
@@ -815,18 +678,18 @@ const Testing: React.FC<TestingProps> = ({ isActive }) => {
             <h4 className={`${colors.accentText} font-medium mb-2`}>How to Use:</h4>
             <ul className={`${colors.secondaryText} space-y-1`}>
               <li>• Train a model in the Training tab first</li>
-              <li>• Position yourself in front of the camera</li>
-              <li>• Perform the poses you trained</li>
-              <li>• Watch real-time AI predictions</li>
+              <li>• Position yourself clearly in front of the camera</li>
+              <li>• Perform the poses you trained the model on</li>
+              <li>• Watch real-time AI predictions with confidence scores</li>
             </ul>
           </div>
           <div>
             <h4 className={`${colors.accentText} font-medium mb-2`}>Features:</h4>
             <ul className={`${colors.secondaryText} space-y-1`}>
-              <li>• Advanced neural network predictions</li>
-              <li>• Confidence-based color coding</li>
-              <li>• Real-time pose classification</li>
-              <li>• Adjustable prediction sensitivity</li>
+              <li>• Real-time ml5.js neural network classification</li>
+              <li>• Confidence-based color coding and highlighting</li>
+              <li>• Adjustable prediction speed and sensitivity</li>
+              <li>• Prediction history tracking</li>
             </ul>
           </div>
         </div>
