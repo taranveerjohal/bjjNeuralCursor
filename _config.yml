@@ -1,0 +1,20 @@
+exclude:
+  - node_modules
+  - frontend/node_modules
+  - backend
+  - "*.json"
+  - "*.js"
+  - "*.ts"
+  - "*.tsx"
+  - "*.config.*"
+
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+
+relative_links:
+  enabled: true
+  collections: true
+
+optional_front_matter:
+  enabled: true
