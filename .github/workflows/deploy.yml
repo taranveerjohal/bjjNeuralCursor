@@ -3,8 +3,6 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
 
 permissions:
   contents: read
@@ -34,24 +32,10 @@ jobs:
           cd frontend
           npm ci --prefer-offline --no-audit
           
-      - name: Debug environment
-        run: |
-          cd frontend
-          echo "Node version: $(node --version)"
-          echo "NPM version: $(npm --version)"
-          echo "Directory contents:"
-          ls -la
-          
       - name: Build
         run: |
           cd frontend
           npm run build
-          
-      - name: Verify build output
-        run: |
-          cd frontend
-          echo "Build output:"
-          ls -la dist/
           
       - name: Setup Pages
         uses: actions/configure-pages@v4
