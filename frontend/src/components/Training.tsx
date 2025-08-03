@@ -42,6 +42,8 @@ const Training: React.FC<TrainingProps> = ({ isActive }) => {
   const isCollectingRef = useRef(false);
   const currentPoseRef = useRef('');
   const samplesCollectedRef = useRef(0);
+  const isCountdownActiveRef = useRef(false);
+  const countdownTimerRef = useRef<number | null>(null);
   
   // Simplified training state
   const [isLoading, setIsLoading] = useState(true);
@@ -53,6 +55,8 @@ const Training: React.FC<TrainingProps> = ({ isActive }) => {
   const [isTraining, setIsTraining] = useState(false);
   const [trainingProgress, setTrainingProgress] = useState(0);
   const [isModelTrained, setIsModelTrained] = useState(false);
+  const [countdownTimer, setCountdownTimer] = useState<number | null>(null);
+  const [isCountdownActive, setIsCountdownActive] = useState(false);
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -66,6 +70,14 @@ const Training: React.FC<TrainingProps> = ({ isActive }) => {
   useEffect(() => {
     samplesCollectedRef.current = samplesCollected;
   }, [samplesCollected]);
+  
+  useEffect(() => {
+    isCountdownActiveRef.current = isCountdownActive;
+  }, [isCountdownActive]);
+  
+  useEffect(() => {
+    countdownTimerRef.current = countdownTimer;
+  }, [countdownTimer]);
 
   // Initialize neural network once
   useEffect(() => {
@@ -95,8 +107,9 @@ const Training: React.FC<TrainingProps> = ({ isActive }) => {
       const gotPoses = (results: any) => {
         posesRef.current = results || [];
         
-        // Simple data collection when actively collecting
+        // Simple data collection when actively collecting (not during countdown)
         if (isCollectingRef.current && 
+            !isCountdownActiveRef.current &&
             results?.[0]?.keypoints && 
             samplesCollectedRef.current < SAMPLES_PER_POSE &&
             isPoseValid(results)) {
@@ -242,8 +255,30 @@ const Training: React.FC<TrainingProps> = ({ isActive }) => {
           });
         });
 
+        // Draw countdown timer if active
+        if (isCountdownActiveRef.current && countdownTimerRef.current !== null) {
+          // Large countdown display in center
+          p.fill(255, 255, 255, 240);
+          p.stroke(255, 0, 0, 255);
+          p.strokeWeight(6);
+          p.rect(p.width/2 - 100, p.height/2 - 100, 200, 200, 20);
+          
+          // Countdown number
+          p.fill(255, 0, 0);
+          p.noStroke();
+          p.textSize(80);
+          p.textStyle(p.BOLD);
+          p.textAlign(p.CENTER, p.CENTER);
+          p.text(countdownTimerRef.current.toString(), p.width/2, p.height/2 - 20);
+          
+          // Instruction text
+          p.fill(255, 255, 255);
+          p.textSize(16);
+          p.text('Get in position!', p.width/2, p.height/2 + 60);
+        }
+
         // Collection indicator
-        if (isCollectingRef.current) {
+        if (isCollectingRef.current && !isCountdownActiveRef.current) {
           // Pulsing indicator
           const pulse = (Math.sin(p.frameCount * 0.3) + 1) / 2;
           p.fill(0, 255, 0, 150 + pulse * 105);
@@ -337,13 +372,30 @@ const Training: React.FC<TrainingProps> = ({ isActive }) => {
       return;
     }
 
-    setIsCollecting(true);
-    setSamplesCollected(0);
-    console.log(`🎯 Started collecting data for pose: ${currentPose}`);
+    // Start countdown timer first
+    setIsCountdownActive(true);
+    setCountdownTimer(10);
+    
+    const interval = setInterval(() => {
+      setCountdownTimer(prev => {
+        if (prev === null || prev <= 1) {
+          clearInterval(interval);
+          setIsCountdownActive(false);
+          // Start actual data collection after countdown
+          setIsCollecting(true);
+          setSamplesCollected(0);
+          console.log(`🎯 Started collecting data for pose: ${currentPose}`);
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
   };
 
   const stopCollecting = () => {
     setIsCollecting(false);
+    setIsCountdownActive(false);
+    setCountdownTimer(null);
     setCurrentPose('');
     setSamplesCollected(0);
     console.log('🛑 Stopped data collection');
@@ -452,13 +504,20 @@ const Training: React.FC<TrainingProps> = ({ isActive }) => {
               className={`flex-1 ${getInputStyles()}`}
               disabled={isCollecting || isTraining}
             />
-            {!isCollecting ? (
+            {!isCollecting && !isCountdownActive ? (
               <button
                 onClick={startCollecting}
                 disabled={!currentPose.trim() || isTraining}
                 className={`px-6 py-3 ${getButtonStyles('primary')} disabled:opacity-50`}
               >
                 🎬 Start Collecting
+              </button>
+            ) : isCountdownActive ? (
+              <button
+                onClick={stopCollecting}
+                className={`px-6 py-3 ${getButtonStyles('danger')}`}
+              >
+                ⏰ Countdown: {countdownTimer}s
               </button>
             ) : (
               <button
